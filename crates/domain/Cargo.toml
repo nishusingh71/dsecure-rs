@@ -1,0 +1,25 @@
+[package]
+name = "domain"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test-only constructor for `TenantScope` (other crates enable it as a dev-dependency feature).
+test-fixtures = []
+
+[dependencies]
+common = { workspace = true }
+serde = { workspace = true }
+# Visibility::Groups(SmallVec<[GroupId; 4]>) (PHASE0_SPEC §3.4). Workspace mein nahi, isliye yahin pinned.
+smallvec = "1.16"
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+uuid = { workspace = true }

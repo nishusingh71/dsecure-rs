@@ -1,0 +1,17 @@
+# Disallowed methods (workspace lint `disallowed_methods = "deny"`).
+# Sirf wahi paths jo declared deps mein exist karte hain. Allowed jagah par
+# `#[allow(clippy::disallowed_methods)]` + comment likho (config_util, api::router, db, bounded_spawn).
+disallowed-methods = [
+    { path = "axum::Router::route", reason = "routes sirf api::router (PolicyRouter) se register hon, har route ki Policy ke saath" },
+    { path = "sqlx::query", reason = "SQL sirf db crate mein (TenantTx ke through)" },
+    { path = "sqlx::query_as", reason = "SQL sirf db crate mein (TenantTx ke through)" },
+    { path = "std::env::var", reason = "env sirf common::config_util se padho" },
+    { path = "tokio::spawn", reason = "bounded_spawn use karo (unbounded tasks nahi)" },
+]
+
+# Tests mein unwrap/expect/panic/print theek hain; production code par deny rehta hai.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true

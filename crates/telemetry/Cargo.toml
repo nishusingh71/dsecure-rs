@@ -1,0 +1,34 @@
+[package]
+name = "telemetry"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["otlp"]
+# OTLP trace exporter (sirf OTEL_EXPORTER_OTLP_ENDPOINT set hone par runtime mein chalta hai)
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+# jemalloc resident/allocated gauges (Windows par default off; api crate Linux par on karega)
+jemalloc = ["dep:tikv-jemalloc-ctl", "tikv-jemalloc-ctl/stats"]
+
+[dependencies]
+config = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+memory-stats = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

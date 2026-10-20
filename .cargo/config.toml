@@ -1,0 +1,7 @@
+[alias]
+xtask = "run -p xtask --"
+
+[env]
+# Windows dev machines: use aws-lc-sys's prebuilt NASM objects instead of requiring a NASM install.
+# Linux/Docker builds do not need NASM; this only affects the Windows x86_64 MSVC build.
+AWS_LC_SYS_PREBUILT_NASM = "1"

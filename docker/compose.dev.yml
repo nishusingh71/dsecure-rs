@@ -1,0 +1,15 @@
+# Local dev only. Koi production secret nahi; password sirf throwaway dev value hai.
+services:
+  db:
+    # TiDB-compatible stand-in; TiDB playground option per DATABASE.md
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: dev-only-root
+      MYSQL_DATABASE: dsecure_dev
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pdev-only-root"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

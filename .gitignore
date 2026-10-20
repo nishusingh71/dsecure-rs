@@ -1,0 +1,14 @@
+target/
+.dev/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Private docs: legacy .NET findings/contracts (public repo must not expose live-system weaknesses)
+docs/private/
+docs/contracts/
+docs/MIGRATION_PLAN.md
+docs/PHASE0_PROGRESS.md

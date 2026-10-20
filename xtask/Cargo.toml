@@ -1,0 +1,30 @@
+[package]
+name = "xtask"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+api = { path = "../crates/api" }
+config = { workspace = true }
+db = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+crypto = { workspace = true }
+zeroize = { workspace = true }
+# P0-20 data-layer gates. Jaan-bujh kar `db` crate par dependency nahi: gates source files + local MySQL par
+# chalte hain, db engineers ka mid-edit code xtask build/clippy na tode.
+regex = "1"
+secrecy = { workspace = true }
+sqlparser = { version = "0.63", features = ["visitor"] }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+common = { workspace = true }

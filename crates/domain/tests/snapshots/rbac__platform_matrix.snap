@@ -1,0 +1,30 @@
+---
+source: crates/domain/tests/rbac.rs
+expression: render_platform_matrix()
+---
+platform permission                SA SUP BIL AUD
+platform.tenants.read              Y  Y   R   R
+platform.tenants.suspend           Y  -   -   -
+platform.features.toggle           Y  T   -   -
+platform.quotas.update             Y  -   Y   -
+platform.staff_access.open         Y  Y   -   -
+platform.members.support           Y  Y   -   -
+platform.licenses.issue            Y  -   Y   -
+platform.credits.adjust            Y  -   Y   -
+platform.refunds                   Y  -   Y   -
+platform.checkout_links.manage     Y  -   Y   -
+platform.webhooks.manage           Y  -   Y   -
+platform.leads.read                Y  Y   Y   -
+platform.leads.manage              Y  Y   Y   -
+platform.releases.manage           Y  -   -   -
+platform.audit.read                Y  -   -   Y
+platform.keys.rotate               A  -   -   -
+platform.tenant.erase              A  -   -   -
+platform.staff.manage              Y  -   -   -
+platform.cleaner_codes.mint        Y  -   Y   -
+platform.autopilot.credits         Y  -   Y   -
+platform.provider_products.manage  Y  -   Y   -
+platform.email_logs.read           Y  Y   -   Y
+platform.downloads.read            Y  Y   Y   -
+platform.reports.revoke            Y  T   -   -
+platform.health.detailed           Y  Y   -   -

@@ -1,0 +1,38 @@
+[package]
+name = "audit"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Dependency rule (ARCHITECTURE.md §3): audit -> db, storage, common. Never auth/api.
+[dependencies]
+common = { workspace = true }
+db = { workspace = true }
+storage = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+metrics = { workspace = true }
+serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+crypto = { workspace = true }
+domain = { workspace = true, features = ["test-fixtures"] }
+sqlx = { workspace = true }
+db = { workspace = true, features = ["test-fixtures"] }
+telemetry = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true }

@@ -1,0 +1,19 @@
+# Reviewed route policy list (xtask route-policies). One line per route:
+# METHOD path | kinds=<principal kinds> | public=<reason, or - when authenticated>
+# Report options: environment=Production, openapi_public=false.
+# Regenerate with `cargo run -p xtask -- route-policies --write`; any diff must be reviewed by the owner.
+GET /.well-known/jwks.json | kinds=- | public=jwks (public JWT verification keys)
+GET /api/v1/me | kinds=member | public=-
+GET /api/v1/me/sessions | kinds=member | public=-
+GET /api/v1/openapi.json | kinds=staff | public=-
+GET /health/live | kinds=- | public=liveness probe
+GET /health/ready | kinds=- | public=readiness probe (status words only)
+POST /api/v1/auth/login | kinds=- | public=login (pre-auth rate limited, generic failures)
+POST /api/v1/auth/logout | kinds=member | public=-
+POST /api/v1/auth/refresh | kinds=- | public=refresh token rotation (rate limited, generic failures)
+POST /api/v1/auth/step-up | kinds=member | public=-
+POST /api/v1/me/mfa/totp | kinds=member | public=-
+POST /api/v1/me/mfa/totp/confirm | kinds=member | public=-
+POST /api/v1/platform/auth/login | kinds=- | public=staff login (password + TOTP; rate limited, generic failures)
+POST /api/v1/platform/auth/logout | kinds=staff | public=-
+POST /api/v1/platform/auth/step-up | kinds=staff | public=-

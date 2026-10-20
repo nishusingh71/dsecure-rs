@@ -1,0 +1,36 @@
+[package]
+name = "storage"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# S3-compatible backend (object_store, bounded multipart buffers). Network tests env `STORAGE_S3_TEST_*` se (default skip).
+s3 = ["dep:object_store"]
+
+[dependencies]
+common = { workspace = true }
+crypto = { workspace = true }
+async-trait = { workspace = true }
+aws-lc-rs = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+# workspace tokio + fs/io-util (storage ko file I/O chahiye; features additive hain)
+tokio = { workspace = true, features = ["fs", "io-util"] }
+uuid = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+object_store = { version = "0.14", default-features = false, features = ["aws"], optional = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+memory-stats = "1.2"
+tempfile = "3"

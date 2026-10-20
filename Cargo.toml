@@ -1,0 +1,117 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/common",
+    "crates/config",
+    "crates/crypto",
+    "crates/domain",
+    "crates/auth",
+    "crates/db",
+    "crates/audit",
+    "crates/storage",
+    "crates/telemetry",
+    "crates/api",
+    "crates/workers",
+    "crates/testkit",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "UNLICENSED"
+publish = false
+
+# Versions checked against crates.io on 20 Oct 2026 (cargo search / cargo info).
+# Sirf wahi crates jo Phase 0 ko chahiye; baaki (reqwest, utoipa, opentelemetry) uske task ke saath aayenge.
+[workspace.dependencies]
+# inter-crate
+common = { path = "crates/common" }
+config = { path = "crates/config" }
+crypto = { path = "crates/crypto" }
+domain = { path = "crates/domain" }
+auth = { path = "crates/auth" }
+db = { path = "crates/db" }
+audit = { path = "crates/audit" }
+storage = { path = "crates/storage" }
+telemetry = { path = "crates/telemetry" }
+testkit = { path = "crates/testkit" }
+
+# runtime / web
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout", "util"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "limit", "sensitive-headers", "catch-panic", "set-header"] }
+hyper = "1"
+bytes = "1"
+futures-util = "0.3"
+
+# database (TiDB, MySQL-compatible)
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "mysql", "uuid", "time", "macros", "migrate", "json"] }
+
+# data / errors
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_json_canonicalizer = "0.4"
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+thiserror = "2"
+anyhow = "1"
+base64 = "0.23"
+unicode-normalization = "0.1"
+async-trait = "0.1"
+
+# observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+# OpenTelemetry set (P0-15): ek compatible line, 20 Oct 2026 (cargo info). tracing-opentelemetry 0.34 <-> opentelemetry 0.33.
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
+# metrics facade + Prometheus recorder (http-listener/push-gateway off: port api bind karega)
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+memory-stats = "1"
+
+# crypto
+aws-lc-rs = "1"
+argon2 = "0.6"
+bcrypt = "0.19"
+jsonwebtoken = "11"
+hmac = "0.13"
+sha2 = "0.11"
+subtle = "2"
+secrecy = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+
+# misc
+figment = { version = "0.10", features = ["env"] }
+moka = { version = "0.12", features = ["sync"] }
+tikv-jemallocator = "0.7"
+tikv-jemalloc-ctl = "0.7"
+
+# dev
+insta = { version = "1", features = ["json"] }
+proptest = "1"
+wiremock = "0.6"
+testcontainers = "0.28"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+dbg_macro = "deny"
+todo = "deny"
+disallowed_methods = "deny"
+large_futures = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

@@ -1,0 +1,221 @@
+# CI for dsecure-rs (P0-18). Written, NOT yet run on GitHub: first run will need small fixes.
+#
+# - No secrets in this file. The only credential is a throwaway MySQL root password derived from the run id
+#   for the service container (exists for the job's lifetime only). `GITHUB_TOKEN` is GitHub's built-in token.
+# - Actions are pinned to release tags, each marked `# TODO pin SHA` (SHAs could not be verified offline;
+#   replace tags by commit SHAs before the first release, e.g. with `pinact`).
+# - Every cargo call uses --locked (Cargo.lock must be committed and fresh; PHASE0_PROGRESS carry-forward 4).
+# - jemalloc is Linux-only (carry-forward 5): --all-features clippy runs on ubuntu, Windows runs default features.
+# - `sqlx offline check` of PHASE0_SPEC P0-18 is not here: the db crate uses runtime queries and
+#   `xtask sqlx-prepare` is still a stub. Add it with that task.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 2 * * *" # nightly: optional TiDB job
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # Windows dev machines need this (see .cargo/config.toml); harmless on Linux.
+  AWS_LC_SYS_PREBUILT_NASM: "1"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - run: cargo fmt --all --check
+
+  clippy:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            features: --all-features
+          - os: windows-latest
+            features: "" # jemalloc does not build on Windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - name: Lockfile is fresh
+        run: cargo metadata --locked --format-version 1 --no-deps > /dev/null
+        shell: bash
+      - run: cargo clippy --locked --workspace --all-targets ${{ matrix.features }} -- -D warnings
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - name: Install cargo-deny and cargo-audit
+        run: |
+          cargo install --locked cargo-deny --version 0.18.2
+          cargo install --locked cargo-audit --version 0.21.2
+      - run: cargo deny --locked check
+      - run: cargo audit --deny warnings
+
+  build-locked:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - run: cargo build --locked --workspace --release --all-features
+
+  # Static data-layer gates (no database): sql-lint, migrate-lint, no-raw-sql, sealed-ctor-gate, route-policies.
+  gates-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - run: cargo run --locked -p xtask -- sql-lint
+      - run: cargo run --locked -p xtask -- migrate-lint
+      - run: cargo run --locked -p xtask -- no-raw-sql
+      - run: cargo run --locked -p xtask -- sealed-ctor-gate
+      # Fails with "api report fn not available yet" until crates/api exposes route_policy_report().
+      - run: cargo run --locked -p xtask -- route-policies --check
+
+  # Tests + DB gates on a MySQL 8.4 service container.
+  test-mysql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MYSQL_ROOT_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DSECURE_DEV_ENV_FILE: ${{ github.workspace }}/.ci/dev.env
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          MYSQL_DATABASE: dsecure_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - name: Write the CI env file (db::testing reads it)
+        run: |
+          mkdir -p .ci
+          {
+            echo "LOCAL_MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}"
+            echo "TEST_DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
+            echo "DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
+            echo "MIGRATOR_DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
+          } > .ci/dev.env
+      - name: Tests (DB tests must run, never skip)
+        run: cargo test --locked --workspace --all-features
+      - name: Data-layer gates on the migrated scratch DB
+        run: |
+          cargo run --locked -p xtask -- schema-check
+          cargo run --locked -p xtask -- explain-check
+      - name: xtask unit tests (gate detection logic)
+        run: cargo test --locked -p xtask
+
+  # Optional: nightly or manual (RUN_TIDB repository variable = true). Not a merge gate yet.
+  # The db tests migrate the shared TiDB test database; schema-check then verifies it (TIDB_PK_TYPE = CLUSTERED).
+  # Seeded explain-check (T-DB13) is still to do (P0-22).
+  test-tidb:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUN_TIDB == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    services:
+      tidb:
+        image: pingcap/tidb:v8.5.1
+        ports:
+          - 4000:4000
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - name: Wait for TiDB
+        run: |
+          for i in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/4000) 2>/dev/null; then exit 0; fi
+            sleep 2
+          done
+          echo "TiDB did not start" >&2
+          exit 1
+      - name: db tests in TiDB mode, then schema-check on the same database (root, no password, service container only)
+        env:
+          DSECURE_DEV_ENV_FILE: ${{ github.workspace }}/.ci/tidb.env
+          DSECURE_TEST_ENGINE: tidb
+          TIDB_DATABASE_URL: mysql://root@127.0.0.1:4000/dsecure_rs_test
+        run: |
+          # dsecure_rs_test = the shared TiDB test database (db::testing::SHARED_TIDB_DB)
+          mysql --host 127.0.0.1 --port 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS dsecure_rs_test'
+          mkdir -p .ci
+          {
+            echo "TEST_DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
+            echo "DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
+            echo "MIGRATOR_DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
+          } > .ci/tidb.env
+          cargo test --locked -p db
+          cargo run --locked -p xtask -- schema-check --database-url-env TIDB_DATABASE_URL
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2.3.9 # TODO pin SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - run: cargo install --locked cargo-cyclonedx --version 0.5.7
+      - name: Generate CycloneDX SBOMs
+        run: cargo cyclonedx --format json --all-features
+      - uses: actions/upload-artifact@v4.6.2 # TODO pin SHA
+        with:
+          name: sbom-cyclonedx
+          path: |
+            **/*.cdx.json
+          if-no-files-found: error

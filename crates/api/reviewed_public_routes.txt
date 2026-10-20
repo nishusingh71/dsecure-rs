@@ -1,0 +1,14 @@
+# Reviewed list of PUBLIC (anonymous) routes. T-R1 (`tests/t_router.rs`) fails if the route table
+# differs. Changing this file needs an architect/reviewer decision (P0-19).
+# Format: <when> <METHOD> <path>
+#   always       = every environment
+#   non-prod     = only when DSECURE_ENV != production and OPENAPI_PUBLIC=true
+#   dev-fixtures = only debug builds with feature `dev-fixtures` and DSECURE_ENV dev/test
+always GET /health/live
+always GET /health/ready
+always GET /.well-known/jwks.json
+always POST /api/v1/auth/login
+always POST /api/v1/auth/refresh
+always POST /api/v1/platform/auth/login
+non-prod GET /api/v1/openapi.json
+dev-fixtures POST /api/v1/dev/fixtures
