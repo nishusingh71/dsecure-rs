@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - run: cargo fmt --all --check
@@ -55,10 +55,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - name: Lockfile is fresh
         run: cargo metadata --locked --format-version 1 --no-deps > /dev/null
         shell: bash
@@ -68,25 +68,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - name: Install cargo-deny and cargo-audit
         run: |
-          cargo install --locked cargo-deny --version 0.18.2
-          cargo install --locked cargo-audit --version 0.21.2
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
       - run: cargo deny --locked check
-      - run: cargo audit --deny warnings
+      # RUSTSEC-2024-0436 (paste, build-time proc-macro of tikv-jemalloc-ctl): same time-limited ignore as deny.toml
+      - run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436
 
   build-locked:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - run: cargo build --locked --workspace --release --all-features
 
   # Static data-layer gates (no database): sql-lint, migrate-lint, no-raw-sql, sealed-ctor-gate, route-policies.
@@ -94,10 +95,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - run: cargo run --locked -p xtask -- sql-lint
       - run: cargo run --locked -p xtask -- migrate-lint
       - run: cargo run --locked -p xtask -- no-raw-sql
@@ -126,19 +127,42 @@ jobs:
           --health-timeout=3s
           --health-retries=30
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
-      - name: Write the CI env file (db::testing reads it)
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
+      - name: Create the DB users like the local setup, write the CI env file
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
         run: |
+          set -euo pipefail
+          # Same users as the local setup (docs/ops/db_users.sql): migrator = DDL, app = DML only. Random per run.
+          MIGRATOR_PW="$(openssl rand -hex 16)"
+          APP_PW="$(openssl rand -hex 16)"
+          echo "::add-mask::${MIGRATOR_PW}"
+          echo "::add-mask::${APP_PW}"
+          export MYSQL_PWD="${MYSQL_ROOT_PASSWORD}"
+          mysql --host "${DB_HOST}" --port "${DB_PORT}" -uroot <<SQL
+          CREATE DATABASE IF NOT EXISTS dsecure_dev CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+          CREATE DATABASE IF NOT EXISTS dsecure_test CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+          CREATE USER 'dsecure_migrator'@'%' IDENTIFIED BY '${MIGRATOR_PW}';
+          CREATE USER 'dsecure_app'@'%' IDENTIFIED BY '${APP_PW}';
+          GRANT SELECT, INSERT, UPDATE, CREATE, ALTER, INDEX, DROP, REFERENCES ON dsecure_dev.* TO 'dsecure_migrator'@'%';
+          GRANT SELECT, INSERT, UPDATE, CREATE, ALTER, INDEX, DROP, REFERENCES ON dsecure_test.* TO 'dsecure_migrator'@'%';
+          GRANT ALL PRIVILEGES ON \`dsecure\_t\_%\`.* TO 'dsecure_migrator'@'%';
+          GRANT SELECT, INSERT, UPDATE ON dsecure_dev.* TO 'dsecure_app'@'%';
+          GRANT SELECT, INSERT, UPDATE ON dsecure_test.* TO 'dsecure_app'@'%';
+          SQL
           mkdir -p .ci
           {
             echo "LOCAL_MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}"
-            echo "TEST_DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
-            echo "DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
-            echo "MIGRATOR_DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@127.0.0.1:3306/dsecure_test"
+            echo "DATABASE_URL=mysql://dsecure_app:${APP_PW}@${DB_HOST}:${DB_PORT}/dsecure_dev"
+            echo "MIGRATOR_DATABASE_URL=mysql://dsecure_migrator:${MIGRATOR_PW}@${DB_HOST}:${DB_PORT}/dsecure_dev"
+            echo "TEST_DATABASE_URL=mysql://dsecure_migrator:${MIGRATOR_PW}@${DB_HOST}:${DB_PORT}/dsecure_test"
           } > .ci/dev.env
+      - name: Apply schema and per-table grants (same tool as local)
+        run: cargo test --locked -p db apply_local_dev_schema_and_grants -- --ignored
       - name: Tests (DB tests must run, never skip)
         run: cargo test --locked --workspace --all-features
       - name: Data-layer gates on the migrated scratch DB
@@ -162,10 +186,10 @@ jobs:
         ports:
           - 4000:4000
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - name: Wait for TiDB
         run: |
           for i in $(seq 1 60); do
@@ -174,31 +198,45 @@ jobs:
           done
           echo "TiDB did not start" >&2
           exit 1
-      - name: db tests in TiDB mode, then schema-check on the same database (root, no password, service container only)
+      - name: Create TiDB users (root only for setup), db tests in TiDB mode, schema-check on the same database
         env:
           DSECURE_DEV_ENV_FILE: ${{ github.workspace }}/.ci/tidb.env
           DSECURE_TEST_ENGINE: tidb
-          TIDB_DATABASE_URL: mysql://root@127.0.0.1:4000/dsecure_rs_test
         run: |
-          # dsecure_rs_test = the shared TiDB test database (db::testing::SHARED_TIDB_DB)
-          mysql --host 127.0.0.1 --port 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS dsecure_rs_test'
+          set -euo pipefail
+          MIGRATOR_PW="$(openssl rand -hex 16)"
+          APP_PW="$(openssl rand -hex 16)"
+          echo "::add-mask::${MIGRATOR_PW}"
+          echo "::add-mask::${APP_PW}"
+          # dsecure_rs_test = the shared TiDB test database (db::testing::SHARED_TIDB_DB). Root is used only here.
+          mysql --host 127.0.0.1 --port 4000 -u root <<SQL
+          CREATE DATABASE IF NOT EXISTS dsecure_rs_test;
+          CREATE USER 'dsecure_migrator'@'%' IDENTIFIED BY '${MIGRATOR_PW}';
+          CREATE USER 'dsecure_app'@'%' IDENTIFIED BY '${APP_PW}';
+          GRANT SELECT, INSERT, UPDATE, CREATE, ALTER, INDEX, DROP ON dsecure_rs_test.* TO 'dsecure_migrator'@'%';
+          GRANT SELECT, INSERT, UPDATE ON dsecure_rs_test.* TO 'dsecure_app'@'%';
+          SQL
+          MIG="mysql://dsecure_migrator:${MIGRATOR_PW}@127.0.0.1:4000/dsecure_rs_test"
+          APP="mysql://dsecure_app:${APP_PW}@127.0.0.1:4000/dsecure_rs_test"
           mkdir -p .ci
           {
-            echo "TEST_DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
-            echo "DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
-            echo "MIGRATOR_DATABASE_URL=mysql://root@127.0.0.1:4000/dsecure_rs_test"
+            echo "TIDB_DEV_URL=${MIG}"
+            echo "TIDB_DEV_APP_URL=${APP}"
+            echo "TEST_DATABASE_URL=${MIG}"
+            echo "DATABASE_URL=${APP}"
+            echo "MIGRATOR_DATABASE_URL=${MIG}"
           } > .ci/tidb.env
           cargo test --locked -p db
-          cargo run --locked -p xtask -- schema-check --database-url-env TIDB_DATABASE_URL
+          TIDB_DATABASE_URL="${MIG}" cargo run --locked -p xtask -- schema-check --database-url-env TIDB_DATABASE_URL
 
   gitleaks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2.3.9 # TODO pin SHA
+      - uses: gitleaks/gitleaks-action@v3.0.0 # TODO pin SHA
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -206,14 +244,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4.2.2 # TODO pin SHA
+      - uses: actions/checkout@v6.1.0 # TODO pin SHA
       - name: Toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.7.8 # TODO pin SHA
+      - uses: Swatinem/rust-cache@v2.9.3 # TODO pin SHA
       - run: cargo install --locked cargo-cyclonedx --version 0.5.7
       - name: Generate CycloneDX SBOMs
         run: cargo cyclonedx --format json --all-features
-      - uses: actions/upload-artifact@v4.6.2 # TODO pin SHA
+      - uses: actions/upload-artifact@v7.0.2 # TODO pin SHA
         with:
           name: sbom-cyclonedx
           path: |

@@ -4,7 +4,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# Time-limited ignores (re-check by 20 Jan 2027). Keep in sync with `cargo audit --ignore` in ci.yml.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained) is only a build-time proc-macro of tikv-jemalloc-ctl 0.7 (jemalloc feature, Linux); no fixed release; no runtime code, no vulnerability" },
+]
 
 [licenses]
 version = 2
@@ -20,12 +23,19 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "OpenSSL",
+    "CDLA-Permissive-2.0", # webpki-roots / webpki-root-certs (CA root data), permissive
 ]
 confidence-threshold = 0.9
+
+# Workspace crates are `publish = false` with `license = "UNLICENSED"` (not an SPDX id): skip them.
+[licenses.private]
+ignore = true
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace path deps have no version: not a registry wildcard.
+allow-wildcard-paths = true
 # Sirf ek crypto backend: aws-lc-rs / RustCrypto; openssl nahi.
 deny = [{ name = "openssl" }, { name = "openssl-sys" }]
 

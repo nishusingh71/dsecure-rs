@@ -1,0 +1,35 @@
+# gitleaks config: default ruleset + exact-fixture allowlists (path AND value must both match).
+# Every entry below is a test fixture or doc prose, verified by hand (20 Oct 2026); none is a real credential.
+# No broad path exclusions: add a new entry per fixture, never exclude a directory.
+title = "dsecure-rs"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Wrong-password literal in the login failure test (crates/api/tests/t_logs_auth.rs)"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^crates/api/tests/t_logs_auth\.rs$''']
+regexes = ['''^wrong-pass-123$''']
+
+[[allowlists]]
+description = "Masking test: base64 of 'Aladdin:open sesame1234567890abcdef' (RFC 7617 example text), crates/telemetry/src/tests.rs"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^crates/telemetry/src/tests\.rs$''']
+regexes = ['''^QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OTBhYmNkZWY=$''']
+
+[[allowlists]]
+description = "Masking test JWT fixture: header HS256/JWT, payload {\"sub\":\"fixture\"}, signature is the ASCII text 'signature-fixture-123' (crates/telemetry/src/tests.rs)"
+condition = "AND"
+targetRules = ["jwt"]
+paths = ['''^crates/telemetry/src/tests\.rs$''']
+regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiJmaXh0dXJlIn0\.c2lnbmF0dXJlLWZpeHR1cmUtMTIz$''']
+
+[[allowlists]]
+description = "Prose in the RBAC test matrix doc (docs/RBAC.md, section 8.1: 'HS256-forged token'), not a key"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^docs/RBAC\.md$''']
+regexes = ['''^HS256-forged$''']
