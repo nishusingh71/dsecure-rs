@@ -50,9 +50,37 @@ impl Inner {
         }
         let r = tokio::time::timeout_at(self.deadline, q.execute(&mut *self.tx))
             .await
-            .map_err(|_| DbError::Timeout)?
-            .map_err(sql::map_err)?;
-        Ok(r.rows_affected())
+            .map_err(|_| DbError::Timeout)?;
+        match r {
+            Ok(r) => Ok(r.rows_affected()),
+            // ✅ TiDB self-hosted: duplicate on a BINARY key -> ERR message with raw bytes -> sqlx
+            // Protocol error (number lost). Server se diagnostics maango, warna purana value-free error.
+            Err(e) if crate::error::is_undecodable_server_message(&e) => {
+                let fallback = sql::map_err(e);
+                Err(self.last_server_error().await.unwrap_or(fallback))
+            }
+            Err(e) => Err(sql::map_err(e)),
+        }
+    }
+
+    /// Classify the previous failed statement of this connection from `SHOW ERRORS` (TEXT protocol,
+    /// columns read as raw bytes, so a non-UTF-8 message is fine). `None` if the server reports no
+    /// error, the row is unusable, or the diagnostics query itself fails / hits the deadline.
+    pub(crate) async fn last_server_error(&mut self) -> Option<DbError> {
+        use crate::queries_internal::SHOW_ERRORS;
+        use sqlx::Row as _;
+        let rows = tokio::time::timeout_at(
+            self.deadline,
+            sql::raw(SHOW_ERRORS).fetch_all(&mut *self.tx),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        // Columns: Level, Code, Message. First error row = the failed statement's error.
+        let row = rows.first()?;
+        let code = row.try_get_unchecked::<&[u8], _>(1).ok()?;
+        let message = row.try_get_unchecked::<&[u8], _>(2).ok()?;
+        DbError::from_diagnostics(code, message)
     }
 
     pub(crate) async fn fetch_optional(&mut self, q: Q<'_>) -> Result<Option<MySqlRow>, DbError> {

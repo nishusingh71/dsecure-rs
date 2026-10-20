@@ -434,3 +434,60 @@ async fn idempotency_replay_mismatch_and_outbox_cap() {
     })
     .await;
 }
+
+/// Recovery path for an ERR packet sqlx cannot decode (TiDB self-hosted: raw BINARY key bytes in
+/// `Duplicate entry`). Engine-side mechanics: right after a failed prepared INSERT, `SHOW ERRORS`
+/// over the text protocol still reports 1062 + key name; after a successful statement it reports
+/// nothing (so a non-server Protocol error keeps its old value-free mapping).
+#[tokio::test]
+async fn show_errors_recovers_duplicate_after_failed_insert() {
+    with_db("show_errors", |db, _| async move {
+        let mut tx = db.identity_tx().await.expect("tx");
+        let mut bidx = [0u8; 32];
+        bidx[..16].copy_from_slice(uuid::Uuid::now_v7().as_bytes());
+        bidx[16..].copy_from_slice(&[0xff; 16]); // non-UTF-8 key bytes
+        let insert = |id: UserId, bidx: [u8; 32]| {
+            crate::sql::q(crate::queries::USERS_INSERT)
+                .bind(id.0)
+                .bind(bidx.to_vec())
+                .bind(vec![1u8])
+                .bind(None::<Vec<u8>>)
+                .bind(UserStatus::Active.as_str())
+                .bind(now())
+                .bind(now())
+        };
+        assert_eq!(
+            tx.inner
+                .execute(insert(UserId::new(), bidx))
+                .await
+                .expect("first"),
+            1
+        );
+        assert!(
+            tx.inner.last_server_error().await.is_none(),
+            "no error after a successful statement"
+        );
+        let dup = tx.inner.execute(insert(UserId::new(), bidx)).await;
+        assert!(
+            matches!(&dup, Err(e) if e.is_duplicate_of("ux_users_email_bidx")),
+            "duplicate gave {dup:?}"
+        );
+        let rec = tx.inner.last_server_error().await;
+        assert!(
+            matches!(&rec, Some(e) if e.is_duplicate_of("ux_users_email_bidx")),
+            "SHOW ERRORS gave {rec:?}"
+        );
+        // The connection is still usable inside the same tx (fresh key -> 1 row).
+        let mut other = bidx;
+        other[..16].copy_from_slice(uuid::Uuid::now_v7().as_bytes());
+        assert_eq!(
+            tx.inner
+                .execute(insert(UserId::new(), other))
+                .await
+                .expect("after recovery"),
+            1
+        );
+        tx.rollback().await;
+    })
+    .await;
+}

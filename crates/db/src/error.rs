@@ -145,6 +145,26 @@ impl DbError {
         }
     }
 
+    /// Rebuild a server error from one `SHOW ERRORS` row (`Code`, `Message` as raw bytes). Used when
+    /// sqlx could not decode the ERR packet itself (see [`is_undecodable_server_message`]). The
+    /// message may contain non-UTF-8 key bytes: it is decoded lossily and only parsed for the key
+    /// *name* (same rule as `from_server`), the value is never kept. `None` = not a usable row.
+    #[must_use]
+    pub(crate) fn from_diagnostics(code: &[u8], message: &[u8]) -> Option<Self> {
+        if code.is_empty() || code.len() > 5 || !code.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        let number = std::str::from_utf8(code).ok()?.parse::<u16>().ok()?;
+        if number == 0 {
+            return None;
+        }
+        Some(Self::from_server(
+            number,
+            "",
+            &String::from_utf8_lossy(message),
+        ))
+    }
+
     /// Safe to rerun the whole (idempotent) transaction?
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
@@ -156,6 +176,16 @@ impl DbError {
     pub fn is_duplicate_of(&self, key: &str) -> bool {
         matches!(self, Self::Duplicate { key: k } if key_matches(k, key))
     }
+}
+
+/// sqlx-mysql 0.9 decodes the ERR packet message with `from_utf8` (sqlx-core `BufExt::get_str`); a
+/// non-UTF-8 byte (TiDB self-hosted puts raw BINARY key bytes into `Duplicate entry '...'`) turns the
+/// whole server error into `Error::Protocol("invalid utf-8 sequence ...")` and the error number is
+/// lost. The packet is already consumed at that point (`waiting` popped), so the connection is still
+/// in sync and the caller may ask the server for the diagnostics (`SHOW ERRORS`).
+#[must_use]
+pub(crate) fn is_undecodable_server_message(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Protocol(m) if m.to_ascii_lowercase().contains("utf-8"))
 }
 
 /// Key-name match tolerant to engine formats: MySQL 8 `tbl.ux_name`, TiDB `ux_name` / `tbl.ux_name`,
@@ -260,6 +290,65 @@ mod tests {
         ));
         let e = DbError::from_server(1064, "42000", "near 'secret'");
         assert!(!e.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn undecodable_err_packet_is_detected() {
+        // Exactly the error sqlx-core builds for a non-UTF-8 ERR message (Utf8Error display + location).
+        let mut raw = b"Duplicate entry '".to_vec();
+        raw.extend_from_slice(&[0x01, 0xff, 0xfe]);
+        let utf8 = std::str::from_utf8(&raw).expect_err("invalid utf-8");
+        let e = sqlx::Error::Protocol(format!("{utf8} (sqlx_core::io::buf:51)"));
+        assert!(is_undecodable_server_message(&e));
+        // Without recovery it stays a value-free client error (old behaviour).
+        assert!(matches!(
+            DbError::from_sqlx(&e),
+            DbError::Client("protocol")
+        ));
+        assert!(!is_undecodable_server_message(&sqlx::Error::Protocol(
+            "Packet empty".into()
+        )));
+        assert!(!is_undecodable_server_message(&sqlx::Error::RowNotFound));
+    }
+
+    #[test]
+    fn diagnostics_row_classifies_binary_duplicate_without_value() {
+        // TiDB self-hosted: raw BINARY(16)/(32) key bytes inside the message.
+        let mut msg = b"Duplicate entry '".to_vec();
+        msg.extend_from_slice(&[0x01, 0x8f, 0xff, 0xfe, 0x00, 0xc3, b's', b'e', b'c']);
+        msg.extend_from_slice(b"' for key 'users.ux_users_email_bidx'");
+        let e = DbError::from_diagnostics(b"1062", &msg).expect("row");
+        assert!(e.is_duplicate_of("ux_users_email_bidx"));
+        let shown = format!("{e} {e:?}");
+        assert!(
+            !shown.contains("sec") && !shown.contains('\u{fffd}'),
+            "{shown}"
+        );
+
+        let e = DbError::from_diagnostics(b"1062", b"Duplicate entry '\xff\x01' for key 'PRIMARY'")
+            .expect("row");
+        assert!(e.is_duplicate_of("PRIMARY"));
+        let e = DbError::from_diagnostics(
+            b"1062",
+            b"Duplicate entry 'x' for key 'group_memberships.PRIMARY'",
+        )
+        .expect("row");
+        assert!(e.is_duplicate_of("PRIMARY"));
+        // Other codes keep their normal classification.
+        assert!(
+            DbError::from_diagnostics(b"9007", b"\xff")
+                .expect("row")
+                .is_retryable()
+        );
+        assert!(matches!(
+            DbError::from_diagnostics(b"1452", b"\xff"),
+            Some(DbError::ForeignKey { number: 1452 })
+        ));
+        // Unusable rows -> None (caller keeps the original value-free error).
+        assert!(DbError::from_diagnostics(b"", b"x").is_none());
+        assert!(DbError::from_diagnostics(b"0", b"x").is_none());
+        assert!(DbError::from_diagnostics(b"10x2", b"x").is_none());
+        assert!(DbError::from_diagnostics(b"999999", b"x").is_none());
     }
 
     #[test]

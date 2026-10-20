@@ -25,6 +25,12 @@ pub(crate) fn dynamic<'q>(sql: String) -> Q<'q> {
     sqlx::query(sqlx::AssertSqlSafe(sql))
 }
 
+/// Static SQL over the TEXT protocol (COM_QUERY, no prepare). Only for diagnostics statements such as
+/// `SHOW ERRORS`, where a COM_STMT_PREPARE first could reset the server's diagnostics area.
+pub(crate) fn raw(sql: &'static str) -> sqlx::RawSql {
+    sqlx::raw_sql(sql)
+}
+
 /// Max ids per IN list; callers chunk longer lists.
 pub(crate) const MAX_IDS: usize = 200;
 

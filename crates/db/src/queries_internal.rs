@@ -22,6 +22,11 @@ pub(crate) const SESSION_TIDB_CONSTRAINT_CHECK: &str =
 /// TiDB only (DATABASE.md §1.2). Never sent to MySQL (unknown variable there).
 pub(crate) const SESSION_TIDB_PESSIMISTIC: &str = "SET SESSION tidb_txn_mode = 'pessimistic'";
 
+/// Diagnostics of the previous statement on this connection (Level, Code, Message). Sent with the
+/// TEXT protocol (`sql::raw`) right after a failed statement whose ERR packet sqlx could not decode
+/// (non-UTF-8 bytes in the message, e.g. TiDB duplicate entry on a BINARY key). Not a write.
+pub(crate) const SHOW_ERRORS: &str = "SHOW ERRORS";
+
 /// Timeouts are formatted from typed integers (u32) only.
 pub(crate) fn session_timeouts(max_execution_time_ms: u32, lock_wait_timeout_s: u32) -> String {
     format!(
