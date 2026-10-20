@@ -182,7 +182,7 @@ jobs:
     continue-on-error: true
     services:
       tidb:
-        image: pingcap/tidb:v8.5.1
+        image: pingcap/tidb:v8.5.3 # same version as the TiDB Cloud Serverless test cluster
         ports:
           - 4000:4000
     steps:
@@ -239,6 +239,8 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3.0.0 # TODO pin SHA
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # .gitleaks.toml uses [[allowlists]], which needs gitleaks >= 8.25; the action's default is 8.24.3.
+          GITLEAKS_VERSION: "8.30.1"
 
   sbom:
     runs-on: ubuntu-latest
