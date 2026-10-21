@@ -10,6 +10,7 @@ pub mod errors;
 pub mod json;
 pub mod keys;
 pub mod middleware;
+pub mod ops;
 pub mod ratelimit;
 pub mod router;
 pub mod routes;

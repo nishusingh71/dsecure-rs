@@ -6,13 +6,15 @@
 //! (the KeyRing lazy-create race relies on it).
 
 use crate::error::DbError;
+use crate::platform_admin::PlatformAdminTx;
 use crate::pool::Db;
 use crate::queries::{DATA_KEYS_ACTIVE, DATA_KEYS_BY_KID, DATA_KEYS_DEACTIVATE, DATA_KEYS_INSERT};
 use crate::sql;
-use crate::tx::SystemTx;
+use crate::tx::{Inner, SystemTx};
 use crate::write_guard::WriteOutcome;
 use common::TenantId;
-use crypto::{CryptoError, DekStore, KeyPurpose, Kid, WrappedDek};
+use crypto::{CryptoError, DekStore, KeyProvider, KeyPurpose, Kid, WrapContext, WrappedDek};
+use domain::rbac::PlatformPerm;
 use time::OffsetDateTime;
 
 /// Platform-scope keys belong to the platform pseudo-tenant (`PLATFORM_TENANT_ID`), so `tenant_id` is
@@ -169,4 +171,215 @@ impl DekStore for DbDekStore {
             }
         }
     }
+}
+
+/// Active PLATFORM DEK of `p`, read inside a platform-admin tx (sees the tx's own inserts).
+/// For first-run provisioning (`xtask provision-keys seed-db`), together with
+/// [`insert_platform_dek_in_tx`], so the DEKs commit atomically with the signing keys and audit row.
+///
+/// # Errors
+/// `Forbidden` (tx opened for another permission), `Invalid` (tenant-scoped purpose), server/decode errors.
+pub async fn platform_active_in_tx(
+    tx: &mut PlatformAdminTx,
+    p: KeyPurpose,
+) -> Result<Option<(Kid, WrappedDek)>, DbError> {
+    tx.require(PlatformPerm::KeysRotate)?;
+    platform_active_inner(&mut tx.inner, p).await
+}
+
+/// Active PLATFORM DEK of `p` inside any platform-admin transaction (bootstrap + keys tx).
+pub(crate) async fn platform_active_inner(
+    inner: &mut Inner,
+    p: KeyPurpose,
+) -> Result<Option<(Kid, WrappedDek)>, DbError> {
+    if p.is_tenant_scoped() {
+        return Err(DbError::Invalid("platform purpose required"));
+    }
+    let Some(row) = inner
+        .fetch_optional(
+            sql::q(DATA_KEYS_ACTIVE)
+                .bind(p.as_str())
+                .bind(scope_key(None)),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let kid: String = sql::col(&row, "kid")?;
+    Ok(Some((
+        Kid::parse(kid).map_err(|_| DbError::Corrupt("data_keys.kid"))?,
+        wrapped(&row)?,
+    )))
+}
+
+/// Insert a new active PLATFORM DEK inside a platform-admin tx opened for `platform.keys.rotate`
+/// (owner-approved). Duplicate active slot = `Conflict("data_keys.active_taken")` (on TiDB it may
+/// only surface at COMMIT, which then fails as a whole).
+///
+/// # Errors
+/// `Forbidden`, `Invalid`, `Conflict`, server errors.
+pub async fn insert_platform_dek_in_tx(
+    tx: &mut PlatformAdminTx,
+    kid: &Kid,
+    p: KeyPurpose,
+    w: &WrappedDek,
+    now: OffsetDateTime,
+) -> Result<(), DbError> {
+    tx.require(PlatformPerm::KeysRotate)?;
+    insert_platform_dek_inner(&mut tx.inner, kid, p, w, now).await
+}
+
+/// Insert a new active PLATFORM DEK inside any platform-admin transaction.
+pub(crate) async fn insert_platform_dek_inner(
+    inner: &mut Inner,
+    kid: &Kid,
+    p: KeyPurpose,
+    w: &WrappedDek,
+    now: OffsetDateTime,
+) -> Result<(), DbError> {
+    if p.is_tenant_scoped() {
+        return Err(DbError::Invalid("platform purpose required"));
+    }
+    match inner
+        .execute(
+            sql::q(DATA_KEYS_INSERT)
+                .bind(kid.as_str())
+                .bind(p.as_str())
+                .bind(db_tenant(None).0)
+                .bind(scope_key(None))
+                .bind(w.kek_ref.as_str())
+                .bind(w.bytes.as_slice())
+                .bind(now),
+        )
+        .await
+    {
+        Ok(n) => n.expect_one(),
+        Err(DbError::Duplicate { .. }) => Err(DbError::Conflict("data_keys.active_taken")),
+        Err(e) => Err(e),
+    }
+}
+
+/// One platform DEK of a first-run plan ([`plan_platform_deks`]): an existing active row (guarded:
+/// same KEK, unwraps) or a NEW one, generated and wrapped in memory but not written yet.
+#[derive(Clone, Debug)]
+pub struct PlatformDekPlan {
+    pub purpose: KeyPurpose,
+    pub kid: Kid,
+    pub wrapped: WrappedDek,
+    /// `true` = already in `data_keys`; `false` = to be inserted by the caller's transaction.
+    pub existing: bool,
+}
+
+/// KEK guard / planning failure. Messages carry only kids and KEK ids (never key bytes).
+#[derive(Debug, thiserror::Error)]
+pub enum DekPlanError {
+    #[error(
+        "platform DEK `{kid}` is wrapped by another KEK (`{found}`), not by this KEK (`{expected}`);          use the keys that created it; nothing was written"
+    )]
+    OtherKek {
+        kid: String,
+        found: String,
+        expected: String,
+    },
+    #[error(
+        "platform DEK `{kid}` does not unwrap with this KEK (same id, different value?); nothing was          written"
+    )]
+    NoUnwrap { kid: String },
+    #[error("platform DEK planning failed: {0}")]
+    Crypto(String),
+}
+
+/// KEK guard for one existing platform DEK: it must carry this KEK's `kek_ref` AND unwrap with it.
+/// Shared by `dsecure-api staff-bootstrap` and `xtask provision-keys seed-db` (review N1).
+///
+/// # Errors
+/// [`DekPlanError`].
+pub async fn guard_platform_dek(
+    provider: &dyn KeyProvider,
+    p: KeyPurpose,
+    kid: &Kid,
+    w: &WrappedDek,
+) -> Result<(), DekPlanError> {
+    if w.kek_ref != provider.active_kek_ref() {
+        return Err(DekPlanError::OtherKek {
+            kid: kid.to_string(),
+            found: w.kek_ref.clone(),
+            expected: provider.active_kek_ref().to_owned(),
+        });
+    }
+    provider
+        .unwrap(
+            w,
+            &WrapContext {
+                kid,
+                purpose: p,
+                tenant: None,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|_| DekPlanError::NoUnwrap {
+            kid: kid.to_string(),
+        })
+}
+
+/// Plan the platform DEKs BEFORE anything is written (read-only): every existing active platform
+/// DEK is guarded ([`guard_platform_dek`]), every missing purpose gets a fresh kid + DEK wrapped by
+/// this KEK. The caller inserts the new ones inside ONE transaction together with its other rows,
+/// re-checking the active slots there ([`PlatformAdminDb::bootstrap_first_superadmin_with_deks`] /
+/// `platform_active_in_tx`), so a mixed-KEK state can never be committed.
+///
+/// Limitation: only ACTIVE platform rows are visible; decrypt-only rows (after a rotation) are not
+/// checked. A fresh database has none.
+///
+/// # Errors
+/// [`DekPlanError`].
+///
+/// [`PlatformAdminDb::bootstrap_first_superadmin_with_deks`]: crate::platform_admin::PlatformAdminDb::bootstrap_first_superadmin_with_deks
+pub async fn plan_platform_deks(
+    provider: &dyn KeyProvider,
+    store: &dyn DekStore,
+) -> Result<Vec<PlatformDekPlan>, DekPlanError> {
+    let mut plan = Vec::with_capacity(KeyPurpose::PLATFORM.len());
+    for p in KeyPurpose::PLATFORM {
+        let found = store
+            .active(p, None)
+            .await
+            .map_err(|e| DekPlanError::Crypto(e.to_string()))?;
+        match found {
+            Some((kid, w)) => {
+                guard_platform_dek(provider, p, &kid, &w).await?;
+                plan.push(PlatformDekPlan {
+                    purpose: p,
+                    kid,
+                    wrapped: w,
+                    existing: true,
+                });
+            }
+            None => {
+                let kid =
+                    Kid::generate(p, None).map_err(|e| DekPlanError::Crypto(e.to_string()))?;
+                let dek =
+                    crypto::Dek::generate().map_err(|e| DekPlanError::Crypto(e.to_string()))?;
+                let w = provider
+                    .wrap(
+                        &dek,
+                        &WrapContext {
+                            kid: &kid,
+                            purpose: p,
+                            tenant: None,
+                        },
+                    )
+                    .await
+                    .map_err(|e| DekPlanError::Crypto(e.to_string()))?;
+                plan.push(PlatformDekPlan {
+                    purpose: p,
+                    kid,
+                    wrapped: w,
+                    existing: false,
+                });
+            }
+        }
+    }
+    Ok(plan)
 }

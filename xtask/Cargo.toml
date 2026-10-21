@@ -17,6 +17,12 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 crypto = { workspace = true }
 zeroize = { workspace = true }
+# provision-keys (staging keys + platform-admin seed): audit row hash, staff perm, timestamps.
+audit = { workspace = true }
+common = { workspace = true }
+domain = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
 # P0-20 data-layer gates. Jaan-bujh kar `db` crate par dependency nahi: gates source files + local MySQL par
 # chalte hain, db engineers ka mid-edit code xtask build/clippy na tode.
 regex = "1"
@@ -27,4 +33,6 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-common = { workspace = true }
+# provision-keys seed-db test: local MySQL scratch DB harness (db::testing), never TiDB.
+db = { workspace = true, features = ["test-fixtures"] }
+futures-util = { workspace = true }

@@ -8,6 +8,7 @@
 mod fixtures;
 mod harness;
 
+mod t_bootstrap;
 mod t_concurrency;
 mod t_engine;
 mod t_epochs;
@@ -16,6 +17,7 @@ mod t_isolation;
 mod t_jobs;
 mod t_keys;
 mod t_last_owner;
+mod t_migrate;
 mod t_misc;
 mod t_pagination;
 mod t_parents;

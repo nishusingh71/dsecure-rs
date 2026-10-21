@@ -106,9 +106,29 @@ pub fn load(env: &Env) -> Result<(AppConfig, ApiExtras), u8> {
     Ok((cfg, extras))
 }
 
+/// Binary entry: `dsecure-api` (server), `dsecure-api migrate [--status]` (release step, B1),
+/// `dsecure-api staff-bootstrap ...` (first platform superadmin, B2). See `crate::ops`.
 #[must_use]
+#[allow(clippy::print_stderr)]
 pub fn main_entry() -> ExitCode {
-    let (cfg, extras) = match load(&Env::process()) {
+    let cmd = match crate::ops::parse_args(std::env::args_os().skip(1)) {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!(
+                "dsecure-api: {msg}
+
+{}",
+                crate::ops::USAGE
+            );
+            return ExitCode::from(crate::ops::EXIT_USAGE);
+        }
+    };
+    if cmd == crate::ops::Command::Help {
+        eprintln!("{}", crate::ops::USAGE);
+        return ExitCode::SUCCESS;
+    }
+    let env = Env::process();
+    let (cfg, extras) = match load(&env) {
         Ok(v) => v,
         Err(code) => return ExitCode::from(code),
     };
@@ -131,7 +151,10 @@ pub fn main_entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    rt.block_on(run(cfg, extras))
+    match cmd {
+        crate::ops::Command::Serve | crate::ops::Command::Help => rt.block_on(run(cfg, extras)),
+        other => ExitCode::from(rt.block_on(crate::ops::run_command(&cfg, &env, &other))),
+    }
 }
 
 async fn run(cfg: AppConfig, extras: ApiExtras) -> ExitCode {
@@ -153,35 +176,41 @@ async fn run(cfg: AppConfig, extras: ApiExtras) -> ExitCode {
     code
 }
 
-/// Platform KeyRing (fail closed). Dev/test only: missing platform DEKs are created first.
-async fn load_keyring(cfg: &AppConfig, db: &db::Db) -> Result<Arc<KeyRing>, ExitCode> {
+/// KEK provider from config (fail closed: dev KEK refused outside dev/test). Error = exit code 78.
+pub(crate) fn kek_provider(cfg: &AppConfig) -> Result<Arc<dyn KeyProvider>, u8> {
     let provider: Arc<dyn KeyProvider> = match cfg.kek.provider {
         Some(KekProvider::Env) => {
             let (Some(id), Some(key)) = (&cfg.kek.env_active_id, &cfg.kek.env_active_key) else {
                 tracing::error!("KEK_ENV_ACTIVE_ID / KEK_ENV_<id> missing");
-                return Err(ExitCode::from(EXIT_CONFIG));
+                return Err(EXIT_CONFIG);
             };
             match EnvKeyProvider::new(id, [(id.clone(), key.clone())]) {
                 Ok(p) => Arc::new(p),
                 Err(e) => {
                     tracing::error!(error = %e, "KEK provider refused");
-                    return Err(ExitCode::from(EXIT_CONFIG));
+                    return Err(EXIT_CONFIG);
                 }
             }
         }
         Some(KekProvider::AzureKv) => {
             tracing::error!("KEK_PROVIDER=azure-kv is not built yet (D-03 / P0-06)");
-            return Err(ExitCode::from(EXIT_CONFIG));
+            return Err(EXIT_CONFIG);
         }
         None => {
             tracing::error!("KEK_PROVIDER missing");
-            return Err(ExitCode::from(EXIT_CONFIG));
+            return Err(EXIT_CONFIG);
         }
     };
     if provider.is_dev() && !cfg.environment.is_local() {
         tracing::error!("dev KEK refused outside dev/test");
-        return Err(ExitCode::from(EXIT_CONFIG));
+        return Err(EXIT_CONFIG);
     }
+    Ok(provider)
+}
+
+/// Platform KeyRing (fail closed). Dev/test only: missing platform DEKs are created first.
+async fn load_keyring(cfg: &AppConfig, db: &db::Db) -> Result<Arc<KeyRing>, ExitCode> {
+    let provider = kek_provider(cfg).map_err(ExitCode::from)?;
     let store = Arc::new(db::DbDekStore::new(db.clone()));
     if cfg.environment.is_local() {
         match KeyRing::ensure_platform_keys(provider.as_ref(), store.as_ref()).await {
@@ -254,7 +283,8 @@ async fn subkey(ring: &KeyRing, label: &'static str) -> Result<[u8; 32], ExitCod
         })
 }
 
-fn hasher(cfg: &AppConfig) -> Result<Argon2idHasher, ExitCode> {
+/// Argon2id hasher from config (production parameter floor outside dev/test). Error = exit 78.
+pub(crate) fn hasher(cfg: &AppConfig) -> Result<Argon2idHasher, u8> {
     let policy = if cfg.environment.is_local() {
         ParamPolicy::Relaxed
     } else {
@@ -272,7 +302,7 @@ fn hasher(cfg: &AppConfig) -> Result<Argon2idHasher, ExitCode> {
     )
     .map_err(|e| {
         tracing::error!(error = %e, "argon2 parameters refused");
-        ExitCode::from(EXIT_CONFIG)
+        EXIT_CONFIG
     })
 }
 
@@ -344,7 +374,7 @@ async fn build_api(
     let refresh_key = subkey(&keys, REFRESH_KEY_LABEL).await?;
     let service = AuthService::new(AuthDeps {
         db: db.clone(),
-        hasher: Arc::new(hasher(cfg)?),
+        hasher: Arc::new(hasher(cfg).map_err(ExitCode::from)?),
         indexer: Arc::clone(&indexer),
         issuer: Arc::new(issuer),
         refresh: RefreshHasher::new(&refresh_key),

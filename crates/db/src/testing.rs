@@ -33,6 +33,27 @@ pub fn scratch_app_user(scratch_db: &str) -> Option<String> {
     valid_scratch_user(&u).then_some(u)
 }
 
+/// Prefix of the per-scratch-DB platform-admin users (`dsecure_tp_<16 hex>`, created on demand by
+/// [`ScratchDb::platform_admin`]).
+pub const SCRATCH_PADM_USER_PREFIX: &str = "dsecure_tp_";
+
+/// Platform-admin user name belonging to scratch database `dsecure_t_<hex>`.
+#[must_use]
+pub fn scratch_padm_user(scratch_db: &str) -> Option<String> {
+    let hex = scratch_db.strip_prefix("dsecure_t_")?;
+    let u = format!("{SCRATCH_PADM_USER_PREFIX}{hex}");
+    valid_scratch_padm_user(&u).then_some(u)
+}
+
+/// Only users produced by [`scratch_padm_user`] may ever be dropped.
+#[must_use]
+pub fn valid_scratch_padm_user(user: &str) -> bool {
+    user.len() <= 32
+        && user
+            .strip_prefix(SCRATCH_PADM_USER_PREFIX)
+            .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Only users produced by [`scratch_app_user`] may ever be dropped.
 #[must_use]
 pub fn valid_scratch_user(user: &str) -> bool {
@@ -289,8 +310,12 @@ pub struct ScratchDb {
     admin: Db,
     migrator: Db,
     app: Option<Db>,
+    /// URL of the scratch app user (`Debug` redacted).
+    app_url: Option<SecretString>,
     /// (user, grantee) of this scratch DB's own app user.
     app_user: Option<(String, String)>,
+    /// (user, grantee) of this scratch DB's own platform-admin user (on demand).
+    padm_user: Option<(String, String)>,
     /// TiDB mode: the shared DB, never dropped.
     shared: bool,
 }
@@ -350,7 +375,9 @@ impl ScratchDb {
             admin,
             migrator,
             app: None,
+            app_url: None,
             app_user: None,
+            padm_user: None,
             shared: false,
         };
         match me.setup(env, opts).await {
@@ -430,7 +457,9 @@ impl ScratchDb {
             admin: migrator.clone(),
             migrator,
             app: Some(app),
+            app_url: Some(app_url.clone()),
             app_user: None,
+            padm_user: None,
             shared: true,
         })
     }
@@ -468,13 +497,15 @@ impl ScratchDb {
                 app_opts.get_port(),
                 self.name
             );
+            let app_url = SecretString::from(app_url);
             self.app = Some(
                 Db::connect(
-                    &test_config_with(&SecretString::from(app_url), opts.max_connections),
+                    &test_config_with(&app_url, opts.max_connections),
                     config::Environment::Test,
                 )
                 .await?,
             );
+            self.app_url = Some(app_url);
         }
         Ok(())
     }
@@ -496,6 +527,66 @@ impl ScratchDb {
         self.app.as_ref()
     }
 
+    /// URL of the least-privilege app user (`None` without a local root password). Never print it.
+    #[must_use]
+    pub const fn app_url(&self) -> Option<&SecretString> {
+        self.app_url.as_ref()
+    }
+
+    /// URL of the migrator user on this scratch DB (TiDB mode: the shared DB URL). Never print it.
+    #[must_use]
+    pub fn migrator_url(&self, env: &TestEnv) -> SecretString {
+        if self.shared {
+            return env
+                .tidb_url
+                .clone()
+                .unwrap_or_else(|| SecretString::from(String::new()));
+        }
+        SecretString::from(with_database(env.test_url.expose_secret(), &self.name))
+    }
+
+    /// Create (once) this scratch DB's OWN platform-admin user (`dsecure_tp_<hex>`, random password)
+    /// with the generated `DbRole::PlatformAdmin` grants and return its URL (never printed). Local
+    /// MySQL with root password only; dropped again by [`ScratchDb::drop_db`].
+    ///
+    /// # Errors
+    /// `Config` (TiDB mode / no root password / already created), server errors.
+    pub async fn platform_admin_url(&mut self, env: &TestEnv) -> Result<SecretString, DbError> {
+        if self.shared {
+            return Err(DbError::Config(
+                "no scratch platform-admin user in TiDB mode",
+            ));
+        }
+        if self.padm_user.is_some() {
+            return Err(DbError::Config(
+                "scratch platform-admin user already created",
+            ));
+        }
+        let mut root = root_connection(env, &self.name).await?;
+        let host = client_host(&mut root).await?;
+        let user = scratch_padm_user(&self.name).ok_or(DbError::Invalid("scratch user name"))?;
+        let grantee = format!("'{user}'@'{host}'");
+        let pw = uuid::Uuid::now_v7().simple().to_string();
+        exec_conn(
+            &mut root,
+            format!("CREATE USER {grantee} IDENTIFIED BY '{pw}'"),
+        )
+        .await?;
+        self.padm_user = Some((user.clone(), grantee.clone()));
+        for g in grant_statements(DbRole::PlatformAdmin, &self.name, &grantee) {
+            exec_conn(&mut root, g).await?;
+        }
+        let _ = root.close().await;
+        let base = MySqlConnectOptions::from_str(env.test_url.expose_secret())
+            .map_err(|_| DbError::Config("TEST_DATABASE_URL could not be parsed"))?;
+        Ok(SecretString::from(format!(
+            "mysql://{user}:{pw}@{}:{}/{}",
+            base.get_host(),
+            base.get_port(),
+            self.name
+        )))
+    }
+
     /// Revoke the scratch app grants and drop ONLY this scratch database.
     ///
     /// # Errors
@@ -508,6 +599,14 @@ impl ScratchDb {
         if self.shared {
             // TiDB mode: the shared DB is never dropped; fixture rows stay under test tenants.
             return Ok(());
+        }
+        // Drop ONLY this scratch DB's own platform-admin user (name validated against its pattern).
+        if let Some((user, grantee)) = &self.padm_user
+            && valid_scratch_padm_user(user)
+            && let Ok(mut root) = root_connection(env, "dsecure_test").await
+        {
+            let _ = exec_conn(&mut root, format!("DROP USER IF EXISTS {grantee}")).await;
+            let _ = root.close().await;
         }
         // Drop ONLY this scratch DB's own app user (name validated against the scratch pattern).
         if let Some((user, grantee)) = &self.app_user

@@ -15,7 +15,7 @@ pub enum TableClass {
     Infra,
 }
 
-/// Phase 0 tables (sets 0100, 0150, 0200, 0800).
+/// Phase 0 tables (sets 0100, 0150, 0200, 0800, 0880).
 pub const TABLE_CLASSES: &[(&str, TableClass)] = &[
     ("tenants", TableClass::Platform),
     ("tenant_settings", TableClass::Tenant),
@@ -51,6 +51,7 @@ pub const TABLE_CLASSES: &[(&str, TableClass)] = &[
     ("idempotency_keys", TableClass::Infra),
     ("tenant_counters", TableClass::Tenant),
     ("member_counters", TableClass::Tenant),
+    ("platform_bootstrap", TableClass::Platform),
 ];
 
 /// Tables owned by tooling, ignored by the schema check.

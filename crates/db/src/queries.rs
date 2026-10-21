@@ -133,6 +133,10 @@ pub(crate) const IDEMPOTENCY_KEYS_TOMBSTONE: &str =
     include_str!("../queries/idempotency_keys/tombstone.sql");
 pub(crate) const PLATFORM_STAFF_GET_FOR_UPDATE: &str =
     include_str!("../queries/platform_staff/get_for_update.sql");
+pub(crate) const PLATFORM_BOOTSTRAP_GET: &str =
+    include_str!("../queries/platform_bootstrap/get.sql");
+pub(crate) const PLATFORM_BOOTSTRAP_INSERT: &str =
+    include_str!("../queries/platform_bootstrap/insert.sql");
 pub(crate) const PLATFORM_STAFF_COUNT_FOR_UPDATE: &str =
     include_str!("../queries/platform_staff/count_for_update.sql");
 pub(crate) const STAFF_ACCESS_GRANTS_CLOSE: &str =
@@ -288,6 +292,8 @@ pub(crate) const ALL: &[(&str, &str)] = &[
         "platform_staff/count_for_update",
         PLATFORM_STAFF_COUNT_FOR_UPDATE,
     ),
+    ("platform_bootstrap/insert", PLATFORM_BOOTSTRAP_INSERT),
+    ("platform_bootstrap/get", PLATFORM_BOOTSTRAP_GET),
     ("staff_access_grants/close", STAFF_ACCESS_GRANTS_CLOSE),
     ("tenants/exists_active", TENANTS_EXISTS_ACTIVE),
     (

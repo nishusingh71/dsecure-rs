@@ -228,16 +228,51 @@ pub(crate) async fn run_to(db: &Db, version: i64) -> Result<(), DbError> {
         .map_err(|e| migrate_err(&e))
 }
 
-/// Release step: connect with `migrator_url` (falls back to `url`) and apply main migrations.
+/// Result of [`run_from_config`]: versions applied by this run (empty = already up to date).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MigrateReport {
+    pub applied: Vec<i64>,
+}
+
+/// Release step (`dsecure-api migrate`): connect with `migrator_url` (falls back to `url`; the api
+/// command requires `MIGRATOR_DATABASE_URL`) and apply main migrations under [`MigrationLock`].
+/// Afterwards nothing may be pending (else `Migrate`).
 ///
 /// # Errors
-/// Connect refusals (TLS / legacy / engine), `Migrate`.
+/// Connect refusals (TLS / legacy / engine), `Conflict("migrate.busy")`, `Migrate`.
 pub async fn run_from_config(
     cfg: &config::DbConfig,
     env: config::Environment,
-) -> Result<(), DbError> {
+) -> Result<MigrateReport, DbError> {
     let db = Db::connect_migrator(cfg, env).await?;
-    let r = run(&db).await;
+    let r = async {
+        let before = pending(&db).await?;
+        run(&db).await?;
+        let after = pending(&db).await?;
+        if !after.is_empty() {
+            return Err(DbError::Migrate(format!(
+                "{} version(s) still pending after run",
+                after.len()
+            )));
+        }
+        Ok(MigrateReport { applied: before })
+    }
+    .await;
+    db.close().await;
+    r
+}
+
+/// `dsecure-api migrate --status`: pending main-set versions, read-only (no lock, no DDL), on the
+/// migrator connection.
+///
+/// # Errors
+/// Connect refusals, `Migrate` (checksum mismatch / dirty version), server errors.
+pub async fn pending_from_config(
+    cfg: &config::DbConfig,
+    env: config::Environment,
+) -> Result<Vec<i64>, DbError> {
+    let db = Db::connect_migrator(cfg, env).await?;
+    let r = pending(&db).await;
     db.close().await;
     r
 }

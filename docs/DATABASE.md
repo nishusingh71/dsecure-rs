@@ -106,7 +106,7 @@ Gaps jinko tests cover karte hain (in sab par code **engine-neutral subset** use
 | L5 | **Schema check** (`cargo xtask schema-check`, CI on MySQL+TiDB, aur staging release step) | `information_schema` se: har table `TABLE_CLASSES` registry (code) mein hona chahiye; tenant class: PK ka pehla column `tenant_id`, PK clustered (TiDB `TIDB_PK_TYPE`), **har** secondary index ka pehla column `tenant_id`; directory/identity/infra class ke liye apne rules; unknown table = fail | CI / release fail |
 | L6 | **Row-tenant assert** | Har tenant row mapper `tenant_id` select karta hai aur `row.tenant_id == tx.tenant` check: mismatch = `AppError::Internal` + alert `db.tenant_mismatch` (kabhi data nahi lautata) | Runtime fail closed |
 | L7 | **Negative tests** | `testkit` har repository function ke liye generated cross-tenant test: tenant A ka TenantTx + B ke ids → `None`/0 rows/404; har by-id route ke liye API matrix (`RBAC.md` §8) | CI fail |
-| L8 | **DB grants** | `dsecure_app` user: tenant tables par sirf `SELECT, INSERT, UPDATE` (no DELETE, no DDL); staff/platform reads alag code path (PlatformTx + grant) | DB error |
+| L8 | **DB grants** | `rs_app` user: tenant tables par sirf `SELECT, INSERT, UPDATE` (no DELETE, no DDL); staff/platform reads alag code path (PlatformTx + grant) | DB error |
 
 Composite references: child row parent ka `(tenant_id, parent_id)` rakhta hai; insert/update se pehle repo same TenantTx mein `SELECT 1 FROM parent WHERE tenant_id=? AND id=? [FOR UPDATE]` karta hai (cross-tenant id = not found = 404). Isliye cross-tenant reference banana impossible hai bina L1-L3 tode.
 
@@ -122,14 +122,17 @@ Composite references: child row parent ka `(tenant_id, parent_id)` rakhta hai; i
 - `db/migrations_shadow/` mein FK statements (MySQL-only) jo CI ke MySQL job mein lagte hain: integration tests mein orphan banana = test fail.
 - Nightly `orphan-check` job (keyset batches 1000, RU-throttled) har reference edge par count report karta hai; > 0 = alert.
 
-### 2.5 DB users (TiDB Serverless user names cluster prefix ke saath; exact naming nv)
+### 2.5 DB users (TiDB Serverless user names cluster prefix ke saath: `<prefix>.<name>`, max 32 chars)
 | User | Grants | Use |
 |---|---|---|
-| `dsecure_migrator` | DDL on app database | Release step `dsecure-api migrate` (owner/main session) |
-| `dsecure_app` | `SELECT, INSERT, UPDATE` on app tables; **no DELETE, no DDL** | API + in-process workers |
-| `dsecure_worker` | Same as app | Separate worker service (D-02) |
-| `dsecure_retention` | `SELECT, DELETE` sirf listed infra tables (`idempotency_keys`, `step_up_tokens`, `auth_challenges`, `outbox_events`, `jobs`, `download_events`, sessions/refresh after 90 days, ...) | Purge jobs; **disabled (no password set) jab tak owner har data class approve na kare** (D-17, D-56) |
-| `dsecure_readonly` | `SELECT` | Reconciliation, support SELECTs (main session) |
+| `rs_mig` | DDL on app database | Release step `dsecure-api migrate` / `migrate --status` (owner/main session; `MIGRATOR_DATABASE_URL`) |
+| `rs_app` | `SELECT, INSERT, UPDATE` on app tables; **no DELETE, no DDL** | API + in-process workers; `staff-bootstrap` user/credential/MFA rows |
+| `rs_wrk` | Least privilege for jobs (`db::grants`) | Separate worker service (D-02) |
+| `rs_padm` | Staff tables + column-level key UPDATEs (`db::grants`, review R1/R5) | Platform-admin path: `dsecure-api staff-bootstrap` (`PLATFORM_ADMIN_DATABASE_URL`), `provision-keys seed-db`, platform console |
+| `rs_ret` | `SELECT, DELETE` sirf listed infra tables (`idempotency_keys`, `step_up_tokens`, `auth_challenges`, `outbox_events`, `jobs`, `download_events`, sessions/refresh after 90 days, ...) | Purge jobs; **disabled (no password set) jab tak owner har data class approve na kare** (D-17, D-56) |
+| `rs_ro` | `SELECT` | Reconciliation, support SELECTs (main session) |
+
+Names are short on purpose (B3): TiDB Serverless user = `<cluster prefix>.<name>` (prefix ~16 chars incl. dot), 32-char limit, so names <= 15 chars (`db::grants::DB_USER_*`, test `user_names_fit_tidb_serverless_limit`). Code checks only `rs_padm` (outside dev/test: `CURRENT_USER()` must be `rs_padm` or `<prefix without dots>.rs_padm`, any host); local dev/CI may use other names.
 Connection: TLS mandatory (`ssl-mode=VERIFY_IDENTITY`, CA from config), Serverless endpoint.
 
 ### 2.6 Table classes (schema-check registry)
@@ -138,7 +141,7 @@ Connection: TLS mandatory (`ssl-mode=VERIFY_IDENTITY`, CA from config), Serverle
 | `tenant` | PK `(tenant_id, id)` clustered (ya `(tenant_id, …)` natural key), har index `tenant_id`-leading, access sirf TenantTx | most tables |
 | `identity` | Global human identity, key = user/session id from token; access `IdentityTx` named queries | `users`, `user_credentials`, `mfa_*`, `sessions`, `refresh_tokens`, `step_up_tokens`, `auth_challenges` |
 | `directory` | Global lookup → `(tenant_id, id)` pointer; tiny rows; result ke baad TenantTx open hota hai | `membership_directory`, `license_key_directory`, `report_public_ids` |
-| `platform` | Staff/catalogue/config; access PlatformTx | `tenants`, `products`, `platform_staff`, `staff_access_grants`, `data_keys`, `signing_keys`, `checkout_links`, `provider_products`, `product_releases`, `contact_leads`, `cleaner_redeem_codes`, `report_number_blocks`, `migration_id_map` |
+| `platform` | Staff/catalogue/config; access PlatformTx | `tenants`, `products`, `platform_staff`, `staff_access_grants`, `platform_bootstrap` (first-run singleton marker, 0880), `data_keys`, `signing_keys`, `checkout_links`, `provider_products`, `product_releases`, `contact_leads`, `cleaner_redeem_codes`, `report_number_blocks`, `migration_id_map` |
 | `infra` | Global append/churn; tenant_id nullable column + tenant-leading secondary index jahan tenant read hota hai | `audit_events`, `audit_chain_blocks`, `outbox_events`, `jobs`, `idempotency_keys`, `webhook_events`, `email_messages`, `email_provider_usage`, `download_events`, `download_daily`, `authz_epochs`, `orders` |
 
 ---

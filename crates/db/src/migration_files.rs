@@ -169,6 +169,10 @@ pub(crate) const MAIN: &[(&str, &str)] = &[
         "0870_0001_add_authz_epochs_poll_index",
         include_str!("../migrations/0870_0001_add_authz_epochs_poll_index.sql"),
     ),
+    (
+        "0880_0001_create_platform_bootstrap",
+        include_str!("../migrations/0880_0001_create_platform_bootstrap.sql"),
+    ),
 ];
 
 pub(crate) const SHADOW: &[(&str, &str)] = &[

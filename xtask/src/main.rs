@@ -1,11 +1,12 @@
-//! xtask: dev helper commands + P0-20 data-layer gates. `dev-keys` aur gates implemented; baaki stubs
-//! har ek task ke saath aayenge.
+//! xtask: dev helper commands + P0-20 data-layer gates. `dev-keys`, `provision-keys` (staging keys) aur
+//! gates implemented; baaki stubs har ek task ke saath aayenge.
 //!
 //! Gates (`cargo xtask <gate>`): sql-lint, migrate-lint, no-raw-sql, sealed-ctor-gate, schema-check,
 //! explain-check, route-policies [--check]; `gates [--db]` sab static gates ek saath chalata hai.
 
 mod dev_keys;
 mod gates;
+mod provision_keys;
 
 use anyhow::{Result, bail};
 
@@ -28,13 +29,16 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
         bail!(
-            "usage: cargo xtask <dev-keys|{}|{}>",
+            "usage: cargo xtask <dev-keys|provision-keys|{}|{}>",
             GATES.join("|"),
             STUBS.join("|")
         );
     };
     if cmd == "dev-keys" {
         return dev_keys::run(args);
+    }
+    if cmd == "provision-keys" {
+        return provision_keys::run(args);
     }
     if let Some(r) = gates::dispatch(&cmd, args) {
         return r;
@@ -43,7 +47,7 @@ fn main() -> Result<()> {
         bail!("xtask `{cmd}`: not implemented yet");
     }
     bail!(
-        "unknown xtask command `{cmd}`; expected one of: dev-keys, {}, {}",
+        "unknown xtask command `{cmd}`; expected one of: dev-keys, provision-keys, {}, {}",
         GATES.join(", "),
         STUBS.join(", ")
     )

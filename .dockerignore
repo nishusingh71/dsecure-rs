@@ -1,0 +1,17 @@
+# Docker build context: never send build output, local secrets or private docs to the daemon / build cache.
+# `**/` patterns also match nested copies (e.g. a stray `.dev/` or keys file in a sub-folder).
+target/
+**/.dev/
+**/.env
+**/.env.*
+**/*.keys.env
+**/*.keys.env.bak-*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+.git/
+docs/private/
+docs/contracts/
+docs/MIGRATION_PLAN.md
+docs/PHASE0_PROGRESS.md
