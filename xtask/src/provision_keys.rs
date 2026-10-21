@@ -1415,10 +1415,14 @@ mod tests {
             .rsplit_once('@')
             .map_or("localhost", |(_, h)| h)
             .to_owned();
-        assert!(matches!(
-            host.as_str(),
-            "localhost" | "127.0.0.1" | "::1" | "%"
-        ));
+        // Root's client host as the server sees it: loopback locally, the Docker bridge IP (e.g.
+        // 172.18.0.1) when MySQL runs as a CI service container. The throwaway scratch user is
+        // created for exactly that host; only an IP / loopback name / `%` is accepted (it is spliced
+        // into DDL). Test-only: no production check is involved.
+        assert!(
+            matches!(host.as_str(), "localhost" | "%") || host.parse::<std::net::IpAddr>().is_ok(),
+            "unexpected client host form"
+        );
         let user = format!(
             "{PADM_PREFIX}{}",
             &uuid::Uuid::now_v7().simple().to_string()[16..]

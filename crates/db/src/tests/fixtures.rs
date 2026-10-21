@@ -156,8 +156,7 @@ pub(crate) fn admin_audit(
     }
 }
 
-/// The scratch DB's superadmin (bootstrapped on first use through the platform-admin path).
-pub(crate) async fn superadmin(db: &Db) -> UserId {
+async fn active_superadmin(db: &Db) -> Option<UserId> {
     let mut tx = db.system_tx().await.expect("tx");
     let row = tx
         .inner
@@ -167,19 +166,36 @@ pub(crate) async fn superadmin(db: &Db) -> UserId {
         .await
         .expect("q");
     tx.rollback().await;
-    if let Some(r) = row {
-        return UserId(crate::sql::uuid_col(&r, "user_id").expect("id"));
+    row.map(|r| UserId(crate::sql::uuid_col(&r, "user_id").expect("id")))
+}
+
+/// The scratch DB's superadmin (bootstrapped on first use through the platform-admin path).
+///
+/// Bounded: a `bootstrap_done` conflict means another test's bootstrap won (shared TiDB DB) and is
+/// committed or about to be, so it re-reads a few times. It used to recurse without limit, which
+/// overflowed the stack when the singleton marker existed WITHOUT any superadmin row (CI run #9).
+pub(crate) async fn superadmin(db: &Db) -> UserId {
+    const ATTEMPTS: u32 = 20;
+    for _ in 0..ATTEMPTS {
+        if let Some(u) = active_superadmin(db).await {
+            return u;
+        }
+        let u = new_user(db).await;
+        match crate::platform_admin::PlatformAdminDb::for_tests(db.clone())
+            .bootstrap_first_superadmin(u, &admin_audit(u, "system", "staff.bootstrap"), now())
+            .await
+        {
+            Ok(()) => return u,
+            // Another test (shared DB) bootstrapped first: read its superadmin on the next round.
+            Err(crate::DbError::Conflict("staff.bootstrap_done")) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("bootstrap: {e}"),
+        }
     }
-    let u = new_user(db).await;
-    match crate::platform_admin::PlatformAdminDb::for_tests(db.clone())
-        .bootstrap_first_superadmin(u, &admin_audit(u, "system", "staff.bootstrap"), now())
-        .await
-    {
-        Ok(()) => u,
-        // Another test (shared DB) bootstrapped first: use that superadmin.
-        Err(crate::DbError::Conflict("staff.bootstrap_done")) => Box::pin(superadmin(db)).await,
-        Err(e) => panic!("bootstrap: {e}"),
-    }
+    panic!(
+        "superadmin fixture: bootstrap refused (marker/staff exist) but no active platform_superadmin          row after {ATTEMPTS} attempts"
+    )
 }
 
 /// Support staff + grant (`scope`) on `tenant`, opened by the superadmin via the platform-admin path.
